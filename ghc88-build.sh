@@ -39,7 +39,7 @@ ln -sfn /usr/bin/alex327 "$ROOT/build/ghc74-tools/alex-3.2.7.4-prefix/bin/alex"
 bash "$ROOT/incoming/bootstrap.sh"
 
 python - "$ROOT" "8.8.4" "$ROOT/dest" "$ROOT/build/ghc88-work/bin/host-gcc" "$ROOT/build/ghc88-work/ghc88-prefix" "ghc88" << 'PY'
-import os, shutil, sys
+import os, shutil, subprocess, sys
 root, ver, dest, host_gcc, prefix, pkg = sys.argv[1:]
 lib = None
 rel = None
@@ -92,6 +92,43 @@ for dirpath, dirnames, filenames in os.walk(lib):
             bad.append(path)
 if bad:
     sys.exit("build prefix still in: %s" % " ".join(bad))
+# The compiler reads package.conf.d/package.cache and does not rebuild it.
+# recache stores the $topdir strings from the .conf files; it does not expand them.
+db = os.path.join(lib, "package.conf.d")
+if os.path.isdir(db):
+    pkgbin = None
+    for relp in ("ghc-pkg.bin", "bin/ghc-pkg", "ghc-pkg"):
+        cand = os.path.join(lib, relp)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            pkgbin = cand
+            break
+    if pkgbin is None:
+        sys.exit("no ghc-pkg under %s" % lib)
+    env = os.environ.copy()
+    env.pop("GHC_PACKAGE_PATH", None)
+    def run(cmd):
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+    rc, help_out = run([pkgbin, "--help"])
+    if "--global-package-db" in help_out:
+        flag = "--global-package-db"
+    elif "--global-conf" in help_out:
+        flag = "--global-conf"
+    else:
+        sys.stderr.write(help_out)
+        sys.exit("ghc-pkg has no global database flag (rc %s)" % rc)
+    rc, out = run([pkgbin, flag, db, "recache"])
+    if rc != 0:
+        sys.stderr.write(out)
+        sys.exit("ghc-pkg recache failed")
+    cache = os.path.join(db, "package.cache")
+    blob = open(cache, "rb").read()
+    for bad_s in (prefix.encode(), build_work.encode(), b"/media/space"):
+        if bad_s in blob:
+            sys.exit("package.cache contains %s" % bad_s.decode())
+    if b"$topdir" not in blob and b"${pkgroot}" not in blob:
+        sys.exit("package.cache has neither $topdir nor ${pkgroot}")
+    print("RECACHED", cache)
 if os.path.isdir(dest):
     shutil.rmtree(dest)
 os.makedirs(os.path.join(dest, os.path.dirname(rel)))
