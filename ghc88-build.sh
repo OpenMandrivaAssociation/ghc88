@@ -1,21 +1,17 @@
 #!/bin/bash
 # Lay out the paths the ghc88 bootstrap script checks, run that script, then
-# rewrite the installed tree so package.conf uses $topdir and the recorded
-# C compiler is %{_libdir}/ghc-8.8.4/bin/host-gcc.
+# rewrite the installed tree so package.conf uses $topdir. The C compiler
+# is the bare name host-gcc. mockbuild cannot create %{_libdir}/ghc-8.8.4.
 set -euo pipefail
 ROOT=${1:?usage: ghc88-build.sh ROOT LIBDIR}
 LIBDIR=${2:?}
 export STAGE="$ROOT"
 export GMP_PREFIX=
-export HOST_GCC="$LIBDIR/ghc-8.8.4/bin/host-gcc"
 export TMPDIR="$ROOT/tmp"
 mkdir -p "$TMPDIR" "$ROOT/build/sources" "$ROOT/build/ref-ghc-bootstrap/common/test" \
 	"$ROOT/build/ghc84-work/ghc84-prefix/bin"
 unset CFLAGS CXXFLAGS LDFLAGS CPPFLAGS RPM_OPT_FLAGS RPM_LD_FLAGS || true
 ulimit -s unlimited 2>/dev/null || true
-
-mkdir -p "$(dirname "$HOST_GCC")"
-touch "$LIBDIR/ghc-8.8.4/.omv-bootstrap-hostgcc"
 
 cp -a "$ROOT/incoming/ghc-8.8.4-src.tar.xz" "$ROOT/build/sources/ghc-8.8.4-src.tar.xz"
 cp -a "$ROOT/incoming/regen-parsers.sh" "$ROOT/build/ref-ghc-bootstrap/common/regen-parsers.sh"
@@ -42,7 +38,7 @@ ln -sfn /usr/bin/alex327 "$ROOT/build/ghc74-tools/alex-3.2.7.4-prefix/bin/alex"
 
 bash "$ROOT/incoming/bootstrap.sh"
 
-python - "$ROOT" "8.8.4" "$ROOT/dest" "$HOST_GCC" "$ROOT/build/ghc88-work/ghc88-prefix" "ghc88" << 'PY'
+python - "$ROOT" "8.8.4" "$ROOT/dest" "$ROOT/build/ghc88-work/bin/host-gcc" "$ROOT/build/ghc88-work/ghc88-prefix" "ghc88" << 'PY'
 import os, shutil, sys
 root, ver, dest, host_gcc, prefix, pkg = sys.argv[1:]
 lib = None
@@ -58,6 +54,7 @@ os.makedirs(os.path.join(lib, "bin"), exist_ok=True)
 shutil.copy(host_gcc, os.path.join(lib, "bin", "host-gcc"))
 os.chmod(os.path.join(lib, "bin", "host-gcc"), 0o755)
 work_gcc = os.path.join(root, "build", pkg + "-work", "bin", "gcc")
+work_host = os.path.join(root, "build", pkg + "-work", "bin", "host-gcc")
 build_work = os.path.join(root, "build", pkg + "-work")
 for dirpath, dirnames, filenames in os.walk(lib):
     for name in filenames:
@@ -71,11 +68,12 @@ for dirpath, dirnames, filenames in os.walk(lib):
             text = open(path, encoding="utf-8", errors="surrogateescape").read()
         except IsADirectoryError:
             continue
-        if lib not in text and prefix not in text and work_gcc not in text:
+        if lib not in text and prefix not in text and work_gcc not in text and work_host not in text:
             continue
         # Library dirs become $topdir. The driver records host-gcc there.
         # Haddock and data-dir entries live under prefix/share; point those
         # at /usr/share. Compiling does not open them.
+        text = text.replace(work_host, "$topdir/bin/host-gcc")
         text = text.replace(work_gcc, "$topdir/bin/host-gcc")
         text = text.replace(lib, "$topdir")
         text = text.replace(prefix, "/usr")
